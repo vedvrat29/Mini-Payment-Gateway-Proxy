@@ -1,0 +1,63 @@
+{
+  "fraudDetection": {
+    "thresholds": {
+      "maxSafeAmount": 500,
+      "fraudThreshold": 0.5
+    },
+    "velocity": {
+      "timeWindowMinutes": 30,
+      "maxTransactionsPerWindow": 5,
+      "moderateVelocityThreshold": 0.7
+    },
+    "suspiciousDomains": [
+      "test.com",
+      "temp.com", 
+      "example.com",
+      ".ru",
+      "10minutemail.com",
+      "guerrillamail.com",
+      "mailinator.com",
+      "disposablemail.com",
+      ".tk",
+      ".ml",
+      "tempmail.org",
+      "throwaway.email"
+    ],
+    "riskyCurrencies": [
+      "EUR",
+      "CAD"
+    ],
+    "riskScores": {
+      "amountRisk": {
+        "moderateMultiplier": 1.0,
+        "moderateScore": 0.1,
+        "highMultiplier": 3.0,
+        "highScore": 0.25,
+        "veryHighMultiplier": 10.0,
+        "veryHighScore": 0.4
+      },
+      "emailRisk": {
+        "suspiciousDomainScore": 0.32,
+        "temporaryEmailScore": 0.25
+      },
+      "sourceRisk": {
+        "suspiciousPatternScore": 0.2,
+        "shortIdentifierScore": 0.1,
+        "shortIdentifierLength": 10
+      },
+      "velocityRisk": {
+        "baseScore": 0.3,
+        "excessMultiplier": 0.1,
+        "maxVelocityScore": 0.5,
+        "moderateVelocityScore": 0.1
+      },
+      "currencyRisk": {
+        "riskyCurrencyScore": 0.05
+      }
+    },
+    "patterns": {
+      "suspiciousSourceKeywords": ["test", "fake", "temp"],
+      "temporaryEmailKeywords": ["temp", "disposable", "fake"]
+    }
+  }
+} 

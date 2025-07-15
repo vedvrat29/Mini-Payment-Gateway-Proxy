@@ -1,0 +1,109 @@
+import { FraudService } from '../../src/services/fraud.service';
+import { storageService } from '../../src/services/storage.service';
+import { PaymentRequest, TransactionStatus, PaymentGateway } from '../../src/models/types';
+
+describe('FraudService', () => {
+  let fraudService: FraudService;
+
+  beforeEach(async () => {
+    fraudService = new FraudService();
+    await storageService.clear();
+  });
+
+  afterEach(async () => {
+    await storageService.clear();
+  });
+
+  describe('calculateRiskScore', () => {
+    it('should return low risk for normal payment', async () => {
+      const request: PaymentRequest = {
+        amount: 100,
+        currency: 'USD',
+        email: 'user@gmail.com'
+      };
+
+      const result = await fraudService.calculateRiskScore(request);
+
+      expect(result.score).toBeLessThan(0.2);
+      expect(result.explanation).toContain('Low risk');
+      expect(result.factors).toBeDefined();
+    });
+
+    it('should return high risk for large amount', async () => {
+      const request: PaymentRequest = {
+        amount: 5000,
+        currency: 'USD',
+        email: 'user@gmail.com'
+      };
+
+      const result = await fraudService.calculateRiskScore(request);
+
+      expect(result.score).toBeGreaterThan(0.2);
+      expect(result.factors.some(f => f.type === 'amount')).toBe(true);
+    });
+
+    it('should return high risk for suspicious email domain', async () => {
+      const request: PaymentRequest = {
+        amount: 100,
+        currency: 'USD',
+        email: 'user@temp.com'
+      };
+
+      const result = await fraudService.calculateRiskScore(request);
+
+      expect(result.score).toBeGreaterThan(0.2);
+      expect(result.factors.some(f => f.type === 'email_domain')).toBe(true);
+    });
+
+    it('should handle velocity risk for multiple transactions', async () => {
+      const email = 'frequent@user.com';
+      
+      // Create multiple recent transactions
+      for (let i = 0; i < 6; i++) {
+        await storageService.saveTransaction({
+          id: `test-${i}`,
+          amount: 100,
+          currency: 'USD',
+          email,
+          riskScore: 0.1,
+          riskExplanation: 'Test transaction',
+          gateway: PaymentGateway.STRIPE,
+          status: TransactionStatus.COMPLETED,
+          createdAt: new Date()
+        });
+      }
+
+      const request: PaymentRequest = {
+        amount: 100,
+        currency: 'USD',
+        email
+      };
+
+      const result = await fraudService.calculateRiskScore(request);
+
+      expect(result.factors.some(f => f.type === 'velocity')).toBe(true);
+    });
+
+    it('should combine multiple risk factors', async () => {
+      const request: PaymentRequest = {
+        amount: 2000, // High amount
+        currency: 'USD',
+        email: 'user@temp.com' // Suspicious domain
+      };
+
+      const result = await fraudService.calculateRiskScore(request);
+
+      expect(result.score).toBeGreaterThan(0.4);
+      expect(result.factors.length).toBeGreaterThan(1);
+      expect(result.factors.some(f => f.type === 'amount')).toBe(true);
+      expect(result.factors.some(f => f.type === 'email_domain')).toBe(true);
+    });
+  });
+
+  describe('healthCheck', () => {
+    it('should return true for healthy service', () => {
+      const result = fraudService.healthCheck();
+      expect(result).toBe(true);
+    });
+  });
+}); 

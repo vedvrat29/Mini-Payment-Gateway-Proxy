@@ -1,0 +1,262 @@
+import request from 'supertest';
+import app from '../../src/app';
+import { storageService } from '../../src/services/storage.service';
+
+describe('Payment API Integration Tests', () => {
+  beforeEach(async () => {
+    await storageService.clear();
+  });
+
+  afterEach(async () => {
+    await storageService.clear();
+  });
+
+  describe('POST /api/payments', () => {
+    it('should process a valid low-risk payment', async () => {
+      const paymentRequest = {
+        amount: 100,
+        currency: 'USD',
+        email: 'user@gmail.com',
+        description: 'Test payment'
+      };
+
+      const response = await request(app)
+        .post('/api/payments')
+        .send(paymentRequest)
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        transactionId: expect.any(String),
+        status: 'processing',
+        gateway: 'stripe',
+        riskScore: expect.any(Number),
+        riskExplanation: expect.any(String),
+        message: expect.stringContaining('stripe')
+      });
+
+      expect(response.body.riskScore).toBeLessThan(0.5);
+    });
+
+    it('should route high-risk payment to PayPal', async () => {
+      const paymentRequest = {
+        amount: 5000, // High amount
+        currency: 'USD',
+        email: 'user@temp.com', // Suspicious domain
+        description: 'High risk payment'
+      };
+
+      const response = await request(app)
+        .post('/api/payments')
+        .send(paymentRequest)
+        .expect(200);
+
+      expect(response.body.gateway).toBe('paypal');
+      expect(response.body.riskScore).toBeGreaterThan(0.5);
+    });
+
+    it('should reject very high-risk payments', async () => {
+      const paymentRequest = {
+        amount: 10000, // Very high amount
+        currency: 'USD',
+        email: 'user@temp.com' // Suspicious domain
+      };
+
+      const response = await request(app)
+        .post('/api/payments')
+        .send(paymentRequest)
+        .expect(200);
+
+      expect(response.body.status).toBe('rejected');
+      expect(response.body.riskScore).toBeGreaterThan(0.8);
+    });
+
+    it('should return 400 for invalid payment request', async () => {
+      const invalidRequest = {
+        amount: -100, // Invalid amount
+        currency: 'INVALID',
+        email: 'not-an-email'
+      };
+
+      const response = await request(app)
+        .post('/api/payments')
+        .send(invalidRequest)
+        .expect(400);
+
+      expect(response.body.error).toBe('Validation Error');
+      expect(response.body.details).toBeDefined();
+    });
+
+    it('should return 400 for missing required fields', async () => {
+      const incompleteRequest = {
+        amount: 100
+        // Missing currency and email
+      };
+
+      const response = await request(app)
+        .post('/api/payments')
+        .send(incompleteRequest)
+        .expect(400);
+
+      expect(response.body.error).toBe('Validation Error');
+    });
+
+    it('should handle large payment amounts correctly', async () => {
+      const paymentRequest = {
+        amount: 99999.99,
+        currency: 'USD',
+        email: 'user@example.com'
+      };
+
+      const response = await request(app)
+        .post('/api/payments')
+        .send(paymentRequest)
+        .expect(200);
+
+      expect(response.body.riskScore).toBeGreaterThan(0.3);
+      expect(response.body.gateway).toBe('paypal');
+    });
+  });
+
+  describe('GET /api/payments/:transactionId', () => {
+    it('should retrieve an existing transaction', async () => {
+      // First create a payment
+      const paymentRequest = {
+        amount: 100,
+        currency: 'USD',
+        email: 'user@example.com'
+      };
+
+      const createResponse = await request(app)
+        .post('/api/payments')
+        .send(paymentRequest)
+        .expect(200);
+
+      const transactionId = createResponse.body.transactionId;
+
+      // Then retrieve it
+      const getResponse = await request(app)
+        .get(`/api/payments/${transactionId}`)
+        .expect(200);
+
+      expect(getResponse.body).toMatchObject({
+        id: transactionId,
+        amount: 100,
+        currency: 'USD',
+        email: 'user@example.com',
+        riskScore: expect.any(Number),
+        gateway: expect.any(String),
+        status: expect.any(String),
+        createdAt: expect.any(String)
+      });
+    });
+
+    it('should return 404 for non-existent transaction', async () => {
+      const response = await request(app)
+        .get('/api/payments/non-existent-id')
+        .expect(404);
+
+      expect(response.body.error).toBe('Not Found');
+      expect(response.body.message).toBe('Transaction not found');
+    });
+
+         it('should return 400 for missing transaction ID', async () => {
+       await request(app)
+         .get('/api/payments/')
+         .expect(404); // Express returns 404 for unmatched routes
+     });
+  });
+
+  describe('GET /health', () => {
+    it('should return health status', async () => {
+      const response = await request(app)
+        .get('/health')
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        status: 'healthy',
+        timestamp: expect.any(String),
+        version: '1.0.0',
+        services: {
+          gemini: expect.any(Boolean),
+          storage: true
+        }
+      });
+    });
+  });
+
+  describe('GET /stats', () => {
+    it('should return service statistics', async () => {
+      const response = await request(app)
+        .get('/stats')
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        storage: {
+          totalTransactions: expect.any(Number),
+          memoryUsage: expect.stringMatching(/\d+(\.\d+)? KB/)
+        },
+        services: {
+          geminiAvailable: expect.any(Boolean),
+          fraudService: true
+        },
+        uptime: expect.any(Number),
+        timestamp: expect.any(String)
+      });
+    });
+  });
+
+  describe('GET /', () => {
+    it('should return API information', async () => {
+      const response = await request(app)
+        .get('/')
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        name: 'Payment Gateway Proxy',
+        version: '1.0.0',
+        status: 'running',
+        endpoints: expect.any(Object)
+      });
+    });
+  });
+
+  describe('404 handling', () => {
+    it('should return 404 for unknown routes', async () => {
+      const response = await request(app)
+        .get('/unknown-route')
+        .expect(404);
+
+      expect(response.body.error).toBe('Not Found');
+    });
+  });
+
+  describe('Fraud detection integration', () => {
+    it('should detect velocity-based fraud risk', async () => {
+      const email = 'frequent@user.com';
+      const paymentRequest = {
+        amount: 100,
+        currency: 'USD',
+        email
+      };
+
+      // Make multiple requests quickly
+      const requests = Array(6).fill(paymentRequest);
+      const responses = await Promise.all(
+        requests.map(req => 
+          request(app)
+            .post('/api/payments')
+            .send(req)
+        )
+      );
+
+      // Last request should have higher risk due to velocity
+      const lastResponse = responses[responses.length - 1];
+      expect(lastResponse?.status).toBe(200);
+      
+      // Check if any response shows increased risk
+      const riskScores = responses.map(r => r?.body?.riskScore || 0);
+      const hasVelocityRisk = riskScores.some(score => score > 0.2);
+      expect(hasVelocityRisk).toBe(true);
+    });
+  });
+}); 
