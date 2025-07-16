@@ -56,7 +56,7 @@ export interface TransactionMetadata {
  * Risk factor identified during fraud assessment
  */
 export interface RiskFactor {
-  type: 'amount' | 'email_domain';
+  type: string; // Dynamic rule type (amount, email_domain, currency, source, etc.)
   value: string | number;
   impact: 'low' | 'medium' | 'high';
   description: string;

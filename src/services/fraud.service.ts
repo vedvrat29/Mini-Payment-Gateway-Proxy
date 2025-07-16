@@ -3,58 +3,69 @@ import logger from '../utils/logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Fraud rules configuration interface - simplified for amount and email_domain only
+// Dynamic fraud rules configuration interface
+interface RuleCondition {
+  // For amount rules
+  operator?: '>=' | '<=' | '>' | '<' | '=' | 'length<' | 'length>' | 'length=';
+  value?: number;
+  
+  // For domain/currency/pattern rules
+  domains?: string[];
+  currencies?: string[];
+  patterns?: string[];
+  
+  // Common properties
+  score: number;
+  impact: 'low' | 'medium' | 'high';
+  description: string;
+}
+
+interface FraudRule {
+  type: string;
+  name: string;
+  enabled: boolean;
+  conditions: RuleCondition[];
+}
+
 interface FraudConfig {
   fraudDetection: {
-    thresholds: {
-      maxSafeAmount: number;
-      fraudThreshold: number;
+    providerThresholds: {
+      stripe: number;
+      paypal: number;
+      blocked: number;
     };
-    suspiciousDomains: string[];
-    riskScores: {
-      amountRisk: {
-        moderateMultiplier: number;
-        moderateScore: number;
-        highMultiplier: number;
-        highScore: number;
-        veryHighMultiplier: number;
-        veryHighScore: number;
+    rules: FraudRule[];
+    riskLevels: {
+      [key: string]: {
+        max: number;
+        label: string;
       };
-      emailRisk: {
-        suspiciousDomainScore: number;
-        temporaryEmailScore: number;
-      };
-    };
-    patterns: {
-      temporaryEmailKeywords: string[];
     };
   };
 }
 
 /**
- * Fraud detection service with configurable risk rules
+ * Dynamic fraud detection service with configurable rule-based engine
  */
 export class FraudService {
   private readonly config: FraudConfig;
-  private readonly maxSafeAmount: number;
-  private readonly suspiciousDomains: Set<string>;
-  private readonly fraudThreshold: number;
+  private readonly rules: Map<string, FraudRule>;
 
   constructor() {
     // Load config from file with fallback to defaults
     this.config = this.loadFraudConfig();
     
-    // Environment variables can override config file values
-    this.maxSafeAmount =  this.config.fraudDetection.thresholds.maxSafeAmount;
-    this.fraudThreshold = this.config.fraudDetection.thresholds.fraudThreshold;
-    
-    this.suspiciousDomains = new Set(this.config.fraudDetection.suspiciousDomains);
+    // Build rules map for efficient lookup
+    this.rules = new Map();
+    this.config.fraudDetection.rules
+      .filter(rule => rule.enabled)
+      .forEach(rule => this.rules.set(rule.type, rule));
 
-    logger.info('Fraud service initialized with simple risk factors', {
-      maxSafeAmount: this.maxSafeAmount,
-      fraudThreshold: this.fraudThreshold,
-      suspiciousDomainsCount: this.suspiciousDomains.size,
-      riskFactors: ['amount', 'email_domain']
+    logger.info('Dynamic fraud service initialized', {
+      totalRules: this.config.fraudDetection.rules.length,
+      enabledRules: this.rules.size,
+      ruleTypes: Array.from(this.rules.keys()),
+      providerThresholds: this.config.fraudDetection.providerThresholds
     });
   }
 
@@ -67,121 +78,128 @@ export class FraudService {
       const configFile = fs.readFileSync(configPath, 'utf8');
       const config = JSON.parse(configFile) as FraudConfig;
       
-      logger.info('Fraud rules loaded from config file', { configPath });
+      logger.info('Dynamic fraud rules loaded from config file', { 
+        configPath,
+        rulesCount: config.fraudDetection.rules.length
+      });
       return config;
     } catch (error) {
-      logger.warn('Failed to load fraud rules config, using defaults', {
+      logger.warn('Failed to load fraud rules config, using minimal defaults', {
         error: error instanceof Error ? error.message : 'Unknown error'
       });
       
-      // Return default configuration as fallback - simplified for amount and email_domain only
+      // Return minimal default configuration
       return {
         fraudDetection: {
-          thresholds: { maxSafeAmount: 1000, fraudThreshold: 0.5 },
-          suspiciousDomains: ['test.com', 'temp.com', '.ru'],
-          riskScores: {
-            amountRisk: { moderateMultiplier: 1.0, moderateScore: 0.1, highMultiplier: 3.0, highScore: 0.25, veryHighMultiplier: 10.0, veryHighScore: 0.4 },
-            emailRisk: { suspiciousDomainScore: 0.3, temporaryEmailScore: 0.25 }
-          },
-          patterns: { temporaryEmailKeywords: ['temp', 'disposable', 'fake'] }
+          providerThresholds: { stripe: 0.25, paypal: 0.5, blocked: 1.0 },
+          rules: [
+            {
+              type: 'amount',
+              name: 'Basic Amount Risk',
+              enabled: true,
+              conditions: [
+                { operator: '>=', value: 500, score: 0.2, impact: 'high', description: 'Large amount' }
+              ]
+            }
+          ],
+          riskLevels: {
+            low: { max: 0.2, label: 'Low' },
+            medium: { max: 0.5, label: 'Medium' },
+            high: { max: 0.8, label: 'High' },
+            veryHigh: { max: 1.0, label: 'Very High' }
+          }
         }
       };
     }
   }
 
   /**
-   * Calculate fraud risk score for a charge request
-   * Uses simple heuristics: large amount + suspicious domain
+   * Calculate fraud risk score using dynamic rule evaluation
    */
   async calculateRiskScore(request: ChargeRequest): Promise<number> {
-    logger.info('Calculating fraud risk', { 
+    logger.info('Calculating fraud risk using dynamic rules', { 
       amount: request.amount,
+      currency: request.currency,
       email: request.email
     });
 
     let totalRiskScore = 0;
+    const appliedRules: string[] = [];
 
-    // Amount-based risk assessment
-    const amountRisk = this.assessAmountRisk(request.amount);
-    totalRiskScore += amountRisk.score;
-
-    // Email domain risk assessment
-    const emailRisk = this.assessEmailRisk(request.email);
-    totalRiskScore += emailRisk.score;
+    // Evaluate all enabled rules dynamically
+    for (const [ruleType, rule] of this.rules) {
+      const ruleResult = this.evaluateRule(rule, request);
+      if (ruleResult.score > 0) {
+        totalRiskScore += ruleResult.score;
+        appliedRules.push(`${ruleType}:${ruleResult.score}`);
+      }
+    }
 
     // Normalize risk score to 0-1 range and round to 1 decimal
     const normalizedScore = Math.min(totalRiskScore, 1.0);
     const roundedScore = Math.round(normalizedScore * 10) / 10;
 
-    logger.info('Risk assessment completed', {
+    logger.info('Dynamic risk assessment completed', {
       email: request.email,
-      riskScore: roundedScore
+      riskScore: roundedScore,
+      appliedRules,
+      totalRulesEvaluated: this.rules.size
     });
 
     return roundedScore;
   }
 
   /**
-   * Determine payment provider based on risk score
-   * Low risk (< 0.25) → Stripe
-   * Moderate risk (0.25 - 0.5) → PayPal  
-   * High risk (≥ 0.5) → Blocked
+   * Determine payment provider based on dynamic thresholds
    */
   determineProvider(riskScore: number): Provider {
-    if (riskScore >= this.fraudThreshold) {
-      // Block submission if risk score ≥ 0.5
+    const thresholds = this.config.fraudDetection.providerThresholds;
+    
+    if (riskScore >= thresholds.paypal) {
       return 'blocked';
-    } else if (riskScore >= 0.25) {
-      // Route to PayPal for moderate risk
+    } else if (riskScore >= thresholds.stripe) {
       return 'paypal';
     } else {
-      // Route to Stripe for low risk
       return 'stripe';
     }
   }
 
   /**
-   * Get risk factors for a charge request
-   * Simple heuristics: large amount + suspicious domain
+   * Get risk factors using dynamic rule evaluation
    */
   async getRiskFactors(request: ChargeRequest): Promise<string[]> {
     const riskFactors: string[] = [];
 
-    // Amount-based risk assessment
-    const amountRisk = this.assessAmountRisk(request.amount);
-    if (amountRisk.score > 0) {
-      riskFactors.push(amountRisk.description);
-    }
-
-    // Email domain risk assessment
-    const emailRisk = this.assessEmailRisk(request.email);
-    if (emailRisk.score > 0) {
-      riskFactors.push(emailRisk.description);
+    // Evaluate all rules and collect descriptions
+    for (const [, rule] of this.rules) {
+      const ruleResult = this.evaluateRule(rule, request);
+      if (ruleResult.score > 0 && ruleResult.description) {
+        riskFactors.push(ruleResult.description);
+      }
     }
 
     return riskFactors;
   }
 
   /**
-   * Get complete fraud risk assessment (for AI integration)
-   * Simple heuristics: large amount + suspicious domain
+   * Get complete fraud risk assessment using dynamic rules
    */
   async getFullRiskAssessment(request: ChargeRequest): Promise<FraudRiskAssessment> {
     const riskFactors: RiskFactor[] = [];
     let totalRiskScore = 0;
 
-    // Amount-based risk assessment
-    const amountRisk = this.assessAmountRisk(request.amount);
-    if (amountRisk.score > 0) {
-      riskFactors.push(amountRisk);
-      totalRiskScore += amountRisk.score;
-    }
-
-    // Email domain risk assessment
-    const emailRisk = this.assessEmailRisk(request.email);
-    if (emailRisk.score > 0) {
-      riskFactors.push(emailRisk);
-      totalRiskScore += emailRisk.score;
+    // Evaluate all enabled rules
+    for (const [, rule] of this.rules) {
+      const ruleResult = this.evaluateRule(rule, request);
+      if (ruleResult.score > 0) {
+        riskFactors.push({
+          type: rule.type,
+          value: ruleResult.value,
+          impact: ruleResult.impact,
+          description: ruleResult.description
+        });
+        totalRiskScore += ruleResult.score;
+      }
     }
 
     // Normalize risk score to 0-1 range and round to 1 decimal
@@ -197,71 +215,155 @@ export class FraudService {
     };
   }
 
-  private assessAmountRisk(amount: number): RiskFactor & { score: number } {
-    let score = 0;
-    let impact: 'low' | 'medium' | 'high' = 'low';
-    let description = '';
-
-    // Simple logic: amounts >= 500 get 0.2 risk score
-    if (amount >= this.maxSafeAmount) {
-      score = 0.2;
-      impact = 'high';
-      description = `Large amount: $${amount}`;
-    }
-
-    return {
-      type: 'amount',
-      value: amount,
-      impact,
-      description: description || `Normal amount: $${amount}`,
-      score
-    };
-  }
-
-  private assessEmailRisk(email: string): RiskFactor & { score: number } {
-    const domain = email.split('@')[1]?.toLowerCase() || '';
-    let score = 0;
-    let impact: 'low' | 'medium' | 'high' = 'low';
-    let description = '';
-    const emailConfig = this.config.fraudDetection.riskScores.emailRisk;
-
-    // Check for suspicious domains
-    const isSuspicious = Array.from(this.suspiciousDomains).some(suspiciousDomain => {
-      if (suspiciousDomain.startsWith('.')) {
-        return domain.endsWith(suspiciousDomain);
+  /**
+   * Dynamic rule evaluation engine
+   */
+  private evaluateRule(rule: FraudRule, request: ChargeRequest): { score: number; value: any; impact: 'low' | 'medium' | 'high'; description: string } {
+    for (const condition of rule.conditions) {
+      const result = this.evaluateCondition(rule.type, condition, request);
+      if (result.matches) {
+        return {
+          score: condition.score,
+          value: result.value,
+          impact: condition.impact,
+          description: `${condition.description}: ${result.value}`
+        };
       }
-      return domain === suspiciousDomain;
-    });
-
-    if (isSuspicious) {
-      score = emailConfig.suspiciousDomainScore;
-      impact = 'medium';
-      description = `Suspicious email domain: ${domain}`;
     }
-
-    // Check for temporary/disposable email patterns
-    const tempKeywords = this.config.fraudDetection.patterns.temporaryEmailKeywords;
-    const isTemporary = tempKeywords.some(keyword => domain.includes(keyword));
     
-    if (isTemporary) {
-      score = Math.max(score, emailConfig.temporaryEmailScore);
-      impact = 'medium';
-      description = `Likely temporary email: ${domain}`;
-    }
-
-    return {
-      type: 'email_domain',
-      value: domain,
-      impact,
-      description: description || `Normal email domain: ${domain}`,
-      score
-    };
+    return { score: 0, value: null, impact: 'low', description: '' };
   }
 
+  /**
+   * Evaluate individual rule condition
+   */
+  private evaluateCondition(ruleType: string, condition: RuleCondition, request: ChargeRequest): { matches: boolean; value: any } {
+    switch (ruleType) {
+      case 'amount':
+        return this.evaluateAmountCondition(condition, request.amount);
+      
+      case 'email_domain':
+        const domain = request.email.split('@')[1]?.toLowerCase() || '';
+        return this.evaluateEmailDomainCondition(condition, domain);
+      
+      case 'currency':
+        return this.evaluateCurrencyCondition(condition, request.currency);
+      
+      case 'source':
+        return this.evaluateSourceCondition(condition, request.source);
+      
+      default:
+        logger.warn('Unknown rule type', { ruleType });
+        return { matches: false, value: null };
+    }
+  }
 
+  /**
+   * Evaluate amount-based conditions
+   */
+  private evaluateAmountCondition(condition: RuleCondition, amount: number): { matches: boolean; value: any } {
+    if (!condition.operator || condition.value === undefined) {
+      return { matches: false, value: amount };
+    }
 
+    let matches = false;
+    switch (condition.operator) {
+      case '>=':
+        matches = amount >= condition.value;
+        break;
+      case '<=':
+        matches = amount <= condition.value;
+        break;
+      case '>':
+        matches = amount > condition.value;
+        break;
+      case '<':
+        matches = amount < condition.value;
+        break;
+      case '=':
+        matches = amount === condition.value;
+        break;
+    }
 
+    return { matches, value: `$${amount}` };
+  }
 
+  /**
+   * Evaluate email domain conditions
+   */
+  private evaluateEmailDomainCondition(condition: RuleCondition, domain: string): { matches: boolean; value: any } {
+    // Check domain lists
+    if (condition.domains) {
+      const matches = condition.domains.some(suspiciousDomain => {
+        if (suspiciousDomain.startsWith('.')) {
+          return domain.endsWith(suspiciousDomain);
+        }
+        return domain === suspiciousDomain;
+      });
+      if (matches) {
+        return { matches: true, value: domain };
+      }
+    }
+
+    // Check patterns
+    if (condition.patterns) {
+      const matches = condition.patterns.some(pattern => domain.includes(pattern));
+      if (matches) {
+        return { matches: true, value: domain };
+      }
+    }
+
+    return { matches: false, value: domain };
+  }
+
+  /**
+   * Evaluate currency conditions
+   */
+  private evaluateCurrencyCondition(condition: RuleCondition, currency: string): { matches: boolean; value: any } {
+    if (condition.currencies) {
+      const matches = condition.currencies.includes(currency);
+      return { matches, value: currency };
+    }
+    return { matches: false, value: currency };
+  }
+
+  /**
+   * Evaluate payment source conditions
+   */
+  private evaluateSourceCondition(condition: RuleCondition, source: string): { matches: boolean; value: any } {
+    // Check patterns
+    if (condition.patterns) {
+      const matches = condition.patterns.some(pattern => source.toLowerCase().includes(pattern));
+      if (matches) {
+        return { matches: true, value: source };
+      }
+    }
+
+    // Check length conditions
+    if (condition.operator && condition.value !== undefined) {
+      let matches = false;
+      switch (condition.operator) {
+        case 'length<':
+          matches = source.length < condition.value;
+          break;
+        case 'length>':
+          matches = source.length > condition.value;
+          break;
+        case 'length=':
+          matches = source.length === condition.value;
+          break;
+      }
+      if (matches) {
+        return { matches: true, value: `${source} (${source.length} chars)` };
+      }
+    }
+
+    return { matches: false, value: source };
+  }
+
+  /**
+   * Generate risk explanation using dynamic risk levels
+   */
   private generateRiskExplanation(score: number, factors: RiskFactor[]): string {
     const riskLevel = this.getRiskLevel(score);
     
@@ -282,20 +384,42 @@ export class FraudService {
     return `${riskLevel} risk transaction. Key concerns: ${factorDescriptions}.`;
   }
 
+  /**
+   * Get risk level label using dynamic configuration
+   */
   private getRiskLevel(score: number): string {
-    if (score < 0.2) return 'Low';
-    if (score < 0.5) return 'Medium';
-    if (score < 0.8) return 'High';
+    const levels = this.config.fraudDetection.riskLevels;
+    
+    for (const [, level] of Object.entries(levels)) {
+      if (score <= level.max) {
+        return level.label;
+      }
+    }
+    
     return 'Very High';
   }
 
+  /**
+   * Health check for the dynamic fraud service
+   */
   healthCheck(): boolean {
     try {
-      // Test basic functionality
-      const testResult = this.assessAmountRisk(100);
+      // Test dynamic rule evaluation
+      const testRequest: ChargeRequest = {
+        amount: 100,
+        currency: 'USD',
+        source: 'tok_test',
+        email: 'test@example.com'
+      };
+      
+      const testResult = this.evaluateRule(
+        this.rules.get('amount') || { type: 'amount', name: 'test', enabled: true, conditions: [] },
+        testRequest
+      );
+      
       return typeof testResult.score === 'number' && testResult.score >= 0;
     } catch (error) {
-      logger.error('Fraud service health check failed', { 
+      logger.error('Dynamic fraud service health check failed', { 
         error: error instanceof Error ? error.message : 'Unknown error'
       });
       return false;

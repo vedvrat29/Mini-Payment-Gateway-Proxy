@@ -1,63 +1,115 @@
 {
   "fraudDetection": {
-    "thresholds": {
-      "maxSafeAmount": 500,
-      "fraudThreshold": 0.5
+    "providerThresholds": {
+      "stripe": 0.25,
+      "paypal": 0.5,
+      "blocked": 1.0
     },
-    "velocity": {
-      "timeWindowMinutes": 30,
-      "maxTransactionsPerWindow": 5,
-      "moderateVelocityThreshold": 0.7
-    },
-    "suspiciousDomains": [
-      "test.com",
-      "temp.com", 
-      "example.com",
-      ".ru",
-      "10minutemail.com",
-      "guerrillamail.com",
-      "mailinator.com",
-      "disposablemail.com",
-      ".tk",
-      ".ml",
-      "tempmail.org",
-      "throwaway.email"
-    ],
-    "riskyCurrencies": [
-      "EUR",
-      "CAD"
-    ],
-    "riskScores": {
-      "amountRisk": {
-        "moderateMultiplier": 1.0,
-        "moderateScore": 0.1,
-        "highMultiplier": 3.0,
-        "highScore": 0.25,
-        "veryHighMultiplier": 10.0,
-        "veryHighScore": 0.4
+    "rules": [
+      {
+        "type": "amount",
+        "name": "Transaction Amount Risk",
+        "enabled": true,
+        "conditions": [
+          {
+            "operator": ">=",
+            "value": 500,
+            "score": 0.2,
+            "impact": "high",
+            "description": "Large amount"
+          },
+          {
+            "operator": ">=", 
+            "value": 1000,
+            "score": 0.3,
+            "impact": "high",
+            "description": "Very large amount"
+          },
+          {
+            "operator": ">=",
+            "value": 5000,
+            "score": 0.5,
+            "impact": "high", 
+            "description": "Extremely large amount"
+          }
+        ]
       },
-      "emailRisk": {
-        "suspiciousDomainScore": 0.32,
-        "temporaryEmailScore": 0.25
+      {
+        "type": "email_domain",
+        "name": "Email Domain Risk",
+        "enabled": true,
+        "conditions": [
+          {
+            "domains": ["example.com", "test.com", "temp.com"],
+            "score": 0.32,
+            "impact": "medium",
+            "description": "Suspicious test domain"
+          },
+          {
+            "domains": [".ru", ".tk", ".ml"],
+            "score": 0.4,
+            "impact": "high", 
+            "description": "High-risk country domain"
+          },
+          {
+            "domains": ["10minutemail.com", "guerrillamail.com", "mailinator.com", "disposablemail.com", "tempmail.org", "throwaway.email"],
+            "score": 0.35,
+            "impact": "high",
+            "description": "Disposable email service"
+          },
+          {
+            "patterns": ["temp", "disposable", "fake", "spam"],
+            "score": 0.25,
+            "impact": "medium",
+            "description": "Temporary email pattern"
+          }
+        ]
       },
-      "sourceRisk": {
-        "suspiciousPatternScore": 0.2,
-        "shortIdentifierScore": 0.1,
-        "shortIdentifierLength": 10
+      {
+        "type": "currency",
+        "name": "Currency Risk",
+        "enabled": false,
+        "conditions": [
+          {
+            "currencies": ["EUR", "CAD"],
+            "score": 0.05,
+            "impact": "low",
+            "description": "Non-USD currency"
+          },
+          {
+            "currencies": ["BTC", "XRP", "ETH"],
+            "score": 0.3,
+            "impact": "high",
+            "description": "Cryptocurrency"
+          }
+        ]
       },
-      "velocityRisk": {
-        "baseScore": 0.3,
-        "excessMultiplier": 0.1,
-        "maxVelocityScore": 0.5,
-        "moderateVelocityScore": 0.1
-      },
-      "currencyRisk": {
-        "riskyCurrencyScore": 0.05
+      {
+        "type": "source",
+        "name": "Payment Source Risk", 
+        "enabled": false,
+        "conditions": [
+          {
+            "patterns": ["test", "fake", "temp"],
+            "score": 0.2,
+            "impact": "medium",
+            "description": "Test payment source"
+          },
+          {
+            "operator": "length<",
+            "value": 8,
+            "score": 0.1,
+            "impact": "low", 
+            "description": "Short payment identifier"
+          }
+        ]
       }
-    },
-    "patterns": {
-      "suspiciousSourceKeywords": ["test", "fake", "temp"],
-      "temporaryEmailKeywords": ["temp", "disposable", "fake"]
+    ],
+    "riskLevels": {
+      "low": { "max": 0.2, "label": "Low" },
+      "medium": { "max": 0.5, "label": "Medium" },
+      "high": { "max": 0.8, "label": "High" },
+      "veryHigh": { "max": 1.0, "label": "Very High" }
     }
   }
 } 

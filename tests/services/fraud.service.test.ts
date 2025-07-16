@@ -107,7 +107,7 @@ describe('FraudService', () => {
 
       expect(factors).toHaveLength(2);
       expect(factors).toContain('Large amount: $600');
-      expect(factors.some(f => f.includes('email domain'))).toBe(true);
+      expect(factors.some(f => f.includes('test.com'))).toBe(true);
     });
 
     it('should return empty array for low-risk payment', async () => {
@@ -148,7 +148,7 @@ describe('FraudService', () => {
       const factors = await fraudService.getRiskFactors(request);
 
       expect(factors).toHaveLength(1);
-      expect(factors[0]).toContain('email domain');
+      expect(factors[0]).toContain('Suspicious test domain: example.com');
     });
   });
 

@@ -120,7 +120,6 @@ app.get('/stats', (req, res) => {
 
 // Charge processing routes
 app.post('/charge', paymentController.processPayment.bind(paymentController));
-app.post('/transactions', paymentController.processPayment.bind(paymentController));
 app.get('/transaction/:transactionId', paymentController.getTransaction.bind(paymentController));
 app.get('/transactions', paymentController.getAllTransactions.bind(paymentController));
 
